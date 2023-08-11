@@ -1,0 +1,264 @@
+---
+title: "siRNA treated Covid_Luminex"
+author: "Ravneet Kaur"
+date: "06/06/2023"
+output: 
+  html_document:
+    code_folding: hide
+    toc: yes
+    theme: spacelab
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+library(dplyr)  
+library(data.table)
+library(ggplot2)
+library(reshape2)
+library(gplots)
+library(pheatmap)
+library(magrittr)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(data.table)
+library(RColorBrewer)
+library(reshape)
+library(stringr)
+library(qvalue)
+```
+
+#Load luminex data
+```{r}
+#file with clinical information, Luminex data
+data<-fread("~/siRNA_treated_Luminex_data/siRNA_luminex_results.csv",header=T)
+data<-as.data.frame(data)
+
+dim(data)
+
+
+#Create vector containing cytokine names
+name <- (names(data[,6:53]))
+
+#Normalzie data
+norm_data <- data
+norm_data[name] <- log(norm_data[name]+1)
+```
+
+
+# siRNA NRP1 vs siRNA control in Infected cells in Macrophages and foam cells
+```{r,fig.height=12,fig.width=12}
+#function to test between nrp1 vs control
+mac_siRNA_ttest = lapply(name, function(cyto) {
+
+	idx1 = norm_data$Treatment == "siRNA NRP1" & norm_data$Condition == "SARSCoV2" & norm_data$`Sample type` == "Macrophages"
+	idx2 = norm_data$Treatment == "siRNA control" & norm_data$Condition == "SARSCoV2" & norm_data$`Sample type` == "Macrophages"
+
+	x = norm_data[idx1, cyto]
+	y = norm_data[idx2, cyto]
+
+	x[x < 0] = 0
+	y[y < 0] = 0
+
+	try({
+		result = t.test(x, y, paired=FALSE)
+		result$estimate = c(
+			mean(x, na.rm=TRUE),
+			mean(y, na.rm=TRUE)
+		)
+		return(result)
+	})
+	return(list(p.value=1.0, estimate=c(0, 0)))
+})
+names(mac_siRNA_ttest) = name
+
+#function to test between nrp1 vs control
+foamcells_siRNA_ttest = lapply(name, function(cyto) {
+
+	idx1 = norm_data$Treatment == "siRNA NRP1" & norm_data$Condition == "SARSCoV2" & norm_data$`Sample type` == "Foam cells"
+	idx2 = norm_data$Treatment == "siRNA control" & norm_data$Condition == "SARSCoV2" & norm_data$`Sample type` == "Foam cells"
+
+	x = norm_data[idx1, cyto]
+	y = norm_data[idx2, cyto]
+
+	x[x < 0] = 0
+	y[y < 0] = 0
+
+	try({
+		result = t.test(x, y, paired=FALSE)
+		result$estimate = c(
+			mean(x, na.rm=TRUE),
+			mean(y, na.rm=TRUE)
+		)
+		return(result)
+	})
+	return(list(p.value=1.0, estimate=c(0, 0)))
+})
+names(foamcells_siRNA_ttest) = name
+
+ratio<-fread("~/ratio_siRNA_nrp1_control.csv",header=T)
+ratio<-as.data.frame(ratio)
+
+#function to test between mac vs foam cells
+ratio_ttest = lapply(name, function(cyto) {
+
+	idx1 = ratio$`Sample type` == "Macrophages"
+	idx2 = ratio$`Sample type` == "Foam cells"
+
+	x = ratio[idx1, cyto]
+	y = ratio[idx2, cyto]
+
+	x[x < 0] = 0
+	y[y < 0] = 0
+
+	try({
+		result = t.test(x, y, paired=FALSE)
+		result$estimate = c(
+			mean(x, na.rm=TRUE),
+			mean(y, na.rm=TRUE)
+		)
+		return(result)
+	})
+	return(list(p.value=1.0, estimate=c(0, 0)))
+})
+names(ratio_ttest) = name
+
+pvals = data.frame(
+	mac_siRNA=sapply(mac_siRNA_ttest, function(x) x$p.value),
+	foamcells_siRNA=sapply(foamcells_siRNA_ttest, function(x) x$p.value)
+)
+pvals[is.na(pvals)] = 1.0  # conservative for missing p-values
+
+pvals_change=data.frame(
+	mac_foamcells=sapply(ratio_ttest, function(x) x$p.value)
+)
+
+p.adjust.M <- p.adjust.methods[p.adjust.methods =="BH"]
+pvals_BH = data.frame(
+	mac_siRNA=sapply(p.adjust.M, function(x) p.adjust(pvals$mac_siRNA, x)),
+	foamcells_siRNA=sapply(p.adjust.M, function(x) p.adjust(pvals$foamcells_siRNA, x))
+)
+colnames(pvals_BH)<-c("mac_siRNA","foamcells_siRNA")
+
+fold_changes = data.frame(
+	mac_siRNA=sapply(mac_siRNA_ttest, function(x) log2(x$estimate[1] / x$estimate[2])),
+	foamcells_siRNA=sapply(foamcells_siRNA_ttest, function(x) log2(x$estimate[1] / x$estimate[2]))
+)
+rownames(fold_changes) = name
+fold_changes[is.na(fold_changes)] = 0.0
+fold_changes[fold_changes > 10] = 10
+fold_changes[fold_changes < -10] = -10
+
+
+mat_mac_not = fold_changes
+mat_mac_not = data.matrix(mat_mac_not)
+
+notes = matrix("", nrow=nrow(mat_mac_not), ncol=ncol(mat_mac_not))
+notes[pvals_BH < 0.1] = " "
+notes[pvals_BH < 0.05] = "*"
+notes[pvals_BH < 0.01] = "**"
+notes[pvals_BH < 0.001] = "***"
+
+noted = matrix("", nrow=nrow(mat_mac_not), ncol=ncol(mat_mac_not))
+noted[pvals_change < 0.1] = ""
+noted[pvals_change < 0.05] = "(*)"
+noted[pvals_change < 0.01] = "(**)"
+noted[pvals_change < 0.001] = "(***)"
+
+x1<-cbind(notes,noted)
+
+comb = data.frame(
+	apply(x1,2, function(x) x)
+)
+
+data <- comb %>%
+  unite("MAC_siRNA", X1,sep= " ",
+        remove = FALSE) %>%
+  unite(
+        "FOAM_siRNA", X2,X3, sep= " ",
+        remove = FALSE)
+
+
+notes_f<-data[,-c(2,4:6)]
+rownames(notes_f) = name
+
+pdf("heatmap_foldchange_siRNAnrp1_vs_siRNAcontrol_infected_ratio.pdf", width=10,height=16)
+#par(mar=c(,1,1,1))
+heatmap.2(mat_mac_not,
+	Colv=FALSE,
+	mar=c(14, 38),
+	trace="none",
+	breaks=seq(-1, 1, length.out=101),
+	col=colorRampPalette(rev(brewer.pal(9, "Spectral")))(100),
+	key.xlab=expression("siRNA NRP1 vs control infected in Mac&foamcells"("log"[2] * " FC")), key.ylab=NA,
+	key.title="",
+	cellnote=notes_f,
+	notecol="black",
+	cexCol=1.0,
+		cexRow=1.0,
+	notecex=1.5,
+	dendrogram="none"
+) 
+dev.off()
+```
+
+## averaged heatmap for mac and foamcells with pheatmap
+```{r,fig.height=12,fig.width=12}
+release<-read.csv("~/zscore_average_mac.csv",header=TRUE,check.names = F)
+
+release_zscore = release[,6:ncol(release)] 
+rownames(release_zscore) = release$`Sample type`
+
+anno_df = data.frame(Condition=as.factor(release$Condition),
+                     Treatment=as.factor(release$Treatment),
+                    stringsAsFactors = FALSE)
+
+annotation_colors = list(
+  Condition=c("not infected"="#4DAF4A","SARSCoV2"="#984EA3"),
+  Treatment=c("siRNA control"="#377EB8","siRNA NRP1"="#E41A1C"))
+
+rownames(anno_df) <- rownames(release_zscore)
+
+release_zscore[release_zscore> 1.5] <- 1.5
+release_zscore[release_zscore< -1.5] <- -1.5
+
+pdf(file="MAC_heatmap_zscore.pdf",height = 10,width = 8)
+pheatmap(t(release_zscore), annotation_col=anno_df, annotation_colors=annotation_colors,
+               fontsize_row = 10, cellwidth = 10,cellheight=10,cluster_cols = F,
+               main="Mac averaged zscore",
+               legend_breaks = c(-1.5,-1,-0.5, 0, 0.5,1,1.5, max(t(release_zscore))),
+               legend_labels=c("-1.5","-1","-0.5", "0", "0.5","1","1.5", "zscore\n"),
+               cluster_rows=T,
+               fontsize_col = 10)
+dev.off()
+
+## averaged heatmap foamcells with pheatmap
+release<-read.csv("~/zscore_average_foam.csv",header=TRUE,check.names = F)
+
+release_zscore = release[,6:ncol(release)] 
+rownames(release_zscore) = release$`Sample type`
+
+anno_df = data.frame(Condition=as.factor(release$Condition),
+                     Treatment=as.factor(release$Treatment),
+                    stringsAsFactors = FALSE)
+
+annotation_colors = list(
+  Condition=c("not infected"="#4DAF4A","SARSCoV2"="#984EA3"),
+  Treatment=c("siRNA control"="#377EB8","siRNA NRP1"="#E41A1C"))
+
+rownames(anno_df) <- rownames(release_zscore)
+
+release_zscore[release_zscore> 1.5] <- 1.5
+release_zscore[release_zscore< -1.5] <- -1.5
+
+pdf(file="FOAM_heatmap_zscore.pdf",height = 10,width = 8)
+pheatmap(t(release_zscore), annotation_col=anno_df, annotation_colors=annotation_colors,
+               fontsize_row = 10, cellwidth = 10,cellheight=10,cluster_cols = F,
+               main="Foam cells averaged zscore",
+               legend_breaks = c(-1.5,-1,-0.5, 0, 0.5,1,1.5, max(t(release_zscore))),
+               legend_labels=c("-1.5","-1","-0.5", "0", "0.5","1","1.5", "zscore\n"),
+               cluster_rows=T,
+               fontsize_col = 10)
+dev.off()
+```
+
